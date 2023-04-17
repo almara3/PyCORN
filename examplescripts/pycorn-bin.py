@@ -361,29 +361,39 @@ styles = {'UV':{'color': '#1919FF', 'lw': 1.6, 'ls': "-", 'alpha':1.0},
 
 def main2():
     for fname in args.inp_res:
+        # Set injection number # as zero retention, use -t to find injection points
         if args.inject == None:
             args.inject = -1
+        # Check if file is a zip-file
         if (fname[-3:]).lower() == "zip":
             fdata = pc_uni6(fname)
             fdata.load()
             fdata.xml_parse()
             fdata.clean_up()
+        # Check if file is a res-file
         if (fname[-3:]).lower() == "res":
             fdata = pc_res3(fname, reduce = args.reduce, inj_sel=args.inject)
             fdata.load()
+        # Check if csv-file is requested
         if args.extract == 'csv':
             data_writer1(fname, fdata)
+        # Check if xlsx-file is requested
         if args.extract == 'xlsx' and xlsx == True:
             generate_xls(fdata, fname)
+        # Check if file is supported (only res)
         if args.check:
             fdata.input_check(show=True)
+        # Display header
         if args.info:
-            fdata.showheader()
+            fdata.showheder()
+        # Display injection points
         if args.points:
             fdata.inject_det(show=True)
+        # Show stored user name
         if args.user:
             user = fdata.get_user()
             print("User: " + user)
+        # plot data
         if args.plot and plotting:
             plotterX(fdata, fname)
 

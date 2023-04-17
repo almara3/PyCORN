@@ -15,6 +15,8 @@ import struct
 import codecs
 import os
 import io
+import pandas as pd
+from copy import deepcopy
 
 class pc_res3(OrderedDict):
     """A class for holding the PyCORN/RESv3 data.
@@ -286,11 +288,22 @@ class pc_uni6(OrderedDict):
     Fractions_id = 0
     Fractions_id2 = 0
     
-    def __init__(self, inp_file):
+    def __init__(self, inp_file, r_name='0p1l2a3c4e5h6o7l8d9e0r', inj_vol=0.0):
         OrderedDict.__init__(self)
+        if r_name == '0p1l2a3c4e5h6o7l8d9e0r':
+            self.run_name = inp_file
+        else:
+            self.run_name = r_name
         self.file_name = inp_file
-        self.inject_vol = 0.0
-        self.run_name = 'blank'
+        self.load()
+        self.xml_parse()
+        self.clean_up()
+        if inj_vol == 0.0 and 'Injection' in self and 'data' in self['Injection']:
+            self.inject_vol = self['Injection']['data'][0][0]
+        else:
+            self.inject_vol = inj_vol
+        #self.substract_inj_vol()
+
     
     def load(self, show=False):
         '''
@@ -361,7 +374,7 @@ class pc_uni6(OrderedDict):
     def zip2dict(inp):
         '''
         input = zip object
-        outout = dict with filename:file-object pairs
+        output = dict with filename:file-object pairs
         '''
         mydict = {}
         for i in inp.NameToInfo:
@@ -387,7 +400,10 @@ class pc_uni6(OrderedDict):
         '''
         parses parts of the Chrom.1.Xml and creates a res3-like dict
         '''
-        tree = ET.fromstring(self['Chrom.1.Xml'])
+        if 'Chrom.1.Xml' in self.keys():
+            tree = ET.fromstring(self['Chrom.1.Xml'])
+        elif 'Compare.Xml' in self.keys():
+            tree = ET.fromstring(self['Compare.Xml'])
         mc = tree.find('Curves')
         me = tree.find('EventCurves')
         print(tree.tag)
@@ -406,33 +422,66 @@ class pc_uni6(OrderedDict):
                 e_vol = float(e_list[e].find('EventVolume').text)
                 e_txt = e_list[e].find('EventText').text
                 e_data.append((e_vol,e_txt))
-            if e_orig == "false":
-                print("not added - not orig data")
             if e_orig == "true":
-                print("added - orig data")
-                x = {'run_name':"Blank", 'data': e_data, 'data_name':e_name, 'magic_id':magic_id}
+                # substract injection volume from x data (volume data)
+                injcurvenumber = mc[i].find('./InjectionEventCurve/CurveNumber')
+                if injcurvenumber is not None:
+                    injcurvenumber = injcurvenumber.text
+                    injvolume = me.find('./EventCurve/CurveNumber/[.="' + injcurvenumber +  '"]..Events/*[@EventType="Injection"]/EventVolume').text
+                    injvolume = float(injvolume)
+                    e_data = [tuple([e[0] - injvolume, ] + list(e[1:])) for e in e_data]
+                x = {'run_name':self.run_name, 'data': e_data, 'data_name':e_name, 'magic_id':magic_id}
                 event_dict.update({e_name:x})
         self.update(event_dict)
         chrom_dict = {}
         for i in range(len(mc)):
             d_type = mc[i].attrib['CurveDataType']
             d_name = mc[i].find('Name').text
-            d_fname = mc[i].find('CurvePoints')[0][1].text
+            d_fname = mc[i].find('CurvePoints')[0][1].text # equals mc[i].find('CurvePoints/CurvePoint/BinaryCurvePointsFileName').text
             d_unit = mc[i].find('AmplitudeUnit').text
             magic_id = self.SensData_id
-            try:
-                x_dat = self[d_fname]['CoordinateData.Volumes']
+            if 'CoordinateData.Amplitudes' in self[d_fname].keys():
                 y_dat = self[d_fname]['CoordinateData.Amplitudes']
-                zdata = list(zip(x_dat,y_dat))
-                if d_name == "UV cell path length":
-                    d_name = "xUV cell path length" # hack to prevent pycorn-bin from picking this up
-                x = {'run_name':"Blank", 'data': zdata, 'unit': d_unit, 'data_name':d_name, 'data_type':d_type, 'magic_id':magic_id}
-                chrom_dict.update({d_name:x})
-            except:
-                KeyError
-                # don't deal with data that does not make sense atm
-                # orig2.zip contains UV-blocks that are (edited) copies of
-                # original UV-trace but they dont have the volume data
+                x_dat = None
+
+                if 'CoordinateData.Volumes' in self[d_fname].keys():
+                    x_dat = self[d_fname]['CoordinateData.Volumes']
+                elif mc[i].find('DerivedCurveOrigin') is not None:
+                    # curves that are derived from other curves dont have x data
+                    # primcurvenumber = mc[i].find('DerivedCurveOrigin/FirstCurve/CurveNumber').text
+                    # primcurvename = mc.find('./Curve/CurveNumber/[.="' + primcurvenumber +  '"]..CurvePoints/CurvePoint/BinaryCurvePointsFileName').text
+                    # primcurvename = mc.find('./Curve/Name/[.="System flow"]..CurvePoints/CurvePoint/BinaryCurvePointsFileName').text
+                    startpoint = mc[i].find('DistanceToStartPoint').text
+                    startpoint = float(startpoint)
+                    pointdistance = mc[i].find('DistanceBetweenPoints').text
+                    pointdistance = float(pointdistance)
+                    x_dat = []
+                    for j in range(len(y_dat)):
+                        x_dat.append(startpoint + j * pointdistance)
+                else:
+                    pass
+                    # don't deal with data that does not make sense atm
+                    # orig2.zip contains UV-blocks that are (edited) copies of
+                    # original UV-trace but they dont have the volume data
+
+                if x_dat is not None:
+                    # substract injection volume from x_dat (volume data)
+                    injcurvenumber = mc[i].find('./InjectionEventCurve/CurveNumber')
+                    if injcurvenumber is not None:
+                        injcurvenumber = injcurvenumber.text
+                        injvolume = me.find('./EventCurve/CurveNumber/[.="' + injcurvenumber +  '"]..Events/*[@EventType="Injection"]/EventVolume').text
+                        injvolume = float(injvolume)
+                        for x in range(len(x_dat)):
+                            x_dat[x] = x_dat[x] - injvolume
+                    zdata = list(zip(x_dat,y_dat))
+                    # hack to prevent pycorn-bin from picking this up
+                    if d_name == "UV cell path length":
+                        d_name = "xUV cell path length"
+                    # data type for flow rate
+                    if d_unit == "ml/min":
+                        d_type = "Flow rate"
+                    x = {'run_name':self.run_name, 'data': zdata, 'unit': d_unit, 'data_name':d_name, 'data_type':d_type, 'magic_id':magic_id}
+                    chrom_dict.update({d_name:x})
             if show:
                 print("---")
                 print(d_type)
@@ -451,3 +500,136 @@ class pc_uni6(OrderedDict):
             file_name = manifest[i][0].text
             self.pop(file_name)
         self.pop('Manifest.xml')
+
+    def xy_data(self, key):
+        '''
+        Takes a data block and returns two lists with x- and y-data
+        '''
+        if 'data' in self[key]:
+            inp = self[key]['data']
+            x_data = [x[0] for x in inp]
+            y_data = [x[1] for x in inp]
+            return x_data, y_data
+
+    def write_csv(self, fname):
+        '''
+        writes sensor/run-data to csv-files
+        '''
+        for i in self.keys():
+            print("Writing: " + self[i]['data_name'])
+            outfile_base = fname[:-4] + "_" + self.run_name + "_" + self[i]['data_name']
+            type = self[i]['data_type']
+            if type == 'meta':
+                data = self[i]['data']
+                data_to_write = data.encode('utf-8')
+                ext = '.txt'
+                sep = '\t'
+                with open(outfile_base + ext, 'wb') as fout:
+                    fout.write(data_to_write)
+            else:
+                x_dat,y_dat = self.xy_data(i)
+                ext = '.csv'
+                sep = ','
+                with open(outfile_base + ext, 'wb') as fout:
+                    for x,y in zip(x_dat,y_dat):
+                        dp = str(x) + sep + str(y) + str('\r\n')
+                        data_to_write = dp.encode('utf-8')
+                        fout.write(data_to_write)
+
+    def write_xls(self, fname):
+        '''
+        Input = pycorn object
+        output = xlsx file
+        '''
+        import xlsxwriter
+        xls_filename = fname[:-4] + "_" + self.run_name + ".xlsx"
+        workbook = xlsxwriter.Workbook(xls_filename)
+        worksheet = workbook.add_worksheet()
+        writable_blocks = [self.Fractions_id, self.Fractions_id2, self.SensData_id, self.SensData_id2]
+        d_list = []
+        for i in self.keys():
+            if self[i]['magic_id'] in writable_blocks:
+                d_list.append(i)
+        for i in d_list:
+            dat = self[i]['data']
+            try:
+                unit = self[i]['unit']
+            except:
+                KeyError
+                unit = 'Fraction'
+            header1 = (self[i]['data_name'], '')
+            header2 = ('ml', unit)
+            dat.insert(0, header1)
+            dat.insert(1, header2)
+            row = 0
+            col = d_list.index(i) *2
+            print("Writing: " + i)
+            for x_val, y_val in (dat):
+                worksheet.write(row, col, x_val)
+                worksheet.write(row, col + 1, y_val)
+                row += 1
+        workbook.close()
+        print("Data written to: " + xls_filename)
+
+    def to_pandas(self):
+        '''
+        converts the dict to a pandas dataframe
+        '''
+        df = pd.DataFrame.from_dict(self, orient='index')
+        df = df.explode('data')
+        df[['volume','value']] = pd.DataFrame(df['data'].tolist(), index=df.index)
+        df = df.drop(columns=['data'])
+        df['volume'] = pd.to_numeric(df['volume'])
+
+        return(df)
+    
+    def volume_to_time(self, key):
+        '''
+        Returns a copy of self[key] with volume data converted to time data based on system flow
+        '''
+        if 'data' in self[key]:
+            v_x_dat, y_dat = self.xy_data('System flow')
+            t_x_dat = [0,]
+            # calculate time points based on system flow
+            for i in range(len(v_x_dat)-1):
+                if y_dat[i] == 0:
+                    dt_v = 0
+                else:
+                    dt_v = (v_x_dat[i+1] - v_x_dat[i])/y_dat[i]
+                if i == 0:
+                    t_v = dt_v
+                else:
+                    t_v = t_x_dat[i] + dt_v
+                t_x_dat.append(t_v)
+
+            # keep time points before injection negative
+            inj_index = v_x_dat.index(min(v_x_dat, key=lambda x:abs(x)))
+            t_x_dat = [x - t_x_dat[inj_index] for x in t_x_dat]
+
+            # copy data block for conversion
+            data = deepcopy(self[key])
+
+            # convert volume data to time data of requested data block
+            p_t_x_dat = []
+            for p in data['data']:
+                closest_1_key = 1
+                closest_2_key = 0
+                # find the two closest volume points
+                for i in range(2, len(t_x_dat)):
+                    if abs(p[0] - v_x_dat[i]) <= abs(p[0] - v_x_dat[closest_1_key]):
+                        closest_2_key = closest_1_key
+                        closest_1_key = i
+                    elif abs(p[0] - v_x_dat[i+1]) <= abs(p[0] - v_x_dat[closest_2_key]):
+                        closest_2_key = i+1
+                    else:
+                        break
+
+                # calculate time point based on linear interpolation
+                m = (t_x_dat[closest_2_key] - t_x_dat[closest_1_key])/(v_x_dat[closest_2_key] - v_x_dat[closest_1_key])
+                b = t_x_dat[closest_1_key] - m*v_x_dat[closest_1_key]
+                t = m*p[0] + b
+                p_t_x_dat.append(t)
+            
+            # replace volume data with time data
+            data['data'] = [tuple([p_t_x_dat[i], ] + list(data['data'][i][1:])) for i in range(len(data['data']))]
+            return data
